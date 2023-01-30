@@ -1,5 +1,5 @@
 import re
-from typing import Dict, List, Union
+from typing import Dict, List, Union,Optional
 
 from sqlparse.sql import (
     Case,
@@ -11,12 +11,14 @@ from sqlparse.sql import (
     Token,
 )
 from sqlparse.tokens import Literal, Wildcard
+import ray
 
 from sqllineage.core.handlers.base import NextTokenBaseHandler
 from sqllineage.core.holders import SubQueryLineageHolder
 from sqllineage.core.models import Column, Path, SubQuery, Table
 from sqllineage.exceptions import SQLLineageException
 from sqllineage.utils.constant import EdgeType
+from sqllineage.utils.entities import ColumnQualifierTuple
 from sqllineage.utils.sqlparse import (
     get_subquery_parentheses,
     is_subquery,
@@ -38,6 +40,8 @@ class SourceHandler(NextTokenBaseHandler):
         self.columns = []
         self.tables = []
         self.union_barriers = []
+      
+
         super().__init__()
 
     def _indicate(self, token: Token) -> bool:
@@ -104,7 +108,47 @@ class SourceHandler(NextTokenBaseHandler):
         for token in column_tokens:
             self.columns.append(Column.of(token))
 
+    def columns_resolver(self, to_resolve:Optional[Column] = None, tgt_holder: Optional[SubQueryLineageHolder] = None):
+        
+        def _to_tgt_col(name: str, parent: Union[Table, SubQuery] = None, src_cols: List[ColumnQualifierTuple] = None):
+            col = Column(name)
+            if parent:
+                col.parent = parent
+            if src_cols:
+                col.source_columns = src_cols
+            return col
+
+        def resolve_subquery_columns(src_holder:SubQueryLineageHolder,src_handler:SourceHandler):
+            if to_resolve and to_resolve.parent in src_holder.write:
+                resolved_cols = [col for col in src_handler.columns]
+                (tgt_cols,src_cols) = tuple(zip(*[(_to_tgt_col(col.raw_name,to_resolve.parent,[ColumnQualifierTuple(col.raw_name,f"{col.parent}" if col.parent else None)]),col) for col in resolved_cols]))
+                self.columns.append(tgt_cols)
+                for tgt_col,src_col in zip(tgt_cols,src_cols):
+                        tgt_holder.add_column_lineage(src_col, tgt_col)
+        
+        def resolve_table_columns(src_holder:SubQueryLineageHolder,src_handler:SourceHandler):
+            if to_resolve and to_resolve.parent in src_holder.write:
+                table_name = to_resolve.parent
+                resolved_cols = src_handler.db.get_table_info([table_name])
+                (tgt_cols,src_cols) = tuple(zip(*[(_to_tgt_col(col.raw_name,to_resolve.parent,[ColumnQualifierTuple(col.raw_name,f"{col.parent}" if col.parent else None)]),col) for col in resolved_cols]))
+                self.columns.append(tgt_cols)
+                for tgt_col,src_col in zip(tgt_cols,src_cols):
+                        tgt_holder.add_column_lineage(src_col, tgt_col)
+
+
+        def return_unit(src_holder:SubQueryLineageHolder = None,src_handler:SourceHandler = None):
+            pass
+
+
+        if to_resolve and isinstance(to_resolve.parent,SubQuery):
+            return resolve_subquery_columns
+        elif to_resolve and isinstance(to_resolve.parent,Table):
+            return resolve_table_columns
+        else: return return_unit
+
+        
     def end_of_query_cleanup(self, holder: SubQueryLineageHolder) -> None:
+                
         for i, tbl in enumerate(self.tables):
             holder.add_read(tbl)
         self.union_barriers.append((len(self.columns), len(self.tables)))
@@ -122,10 +166,25 @@ class SourceHandler(NextTokenBaseHandler):
             if tgt_tbl:
                 for tgt_col in col_grp:
                     tgt_col.parent = tgt_tbl
-                    for src_col in tgt_col.to_source_columns(
+
+                    if '*' in str(tgt_col) and self.resolve_wildcards:
+                        self.columns.remove(tgt_col)
+                        return self.columns_resolver(tgt_col,holder)
+                    else:
+                        src_cols = tgt_col.to_source_columns(
                         self._get_alias_mapping_from_table_group(tbl_grp, holder)
-                    ):
-                        holder.add_column_lineage(src_col, tgt_col)
+                    )
+                    #if '*' in str(tgt_col):
+                    #    i = self.columns[prev_col_barrier:col_barrier].index(tgt_col)
+                    #    (tgt_cols,src_cols) = tuple(zip(*[ (_to_tgt_col(col.raw_name,tgt_tbl,[ColumnQualifierTuple(col.raw_name,f"{col.parent}" if col.parent else None)]),col) for col in  src_cols]))
+                    #    self.columns[prev_col_barrier:col_barrier][i:i+1] = tgt_cols
+                    #    for tgt_col,src_col in zip(tgt_cols,src_cols):
+                    #        holder.add_column_lineage(src_col, tgt_col)
+                    
+                    #else:
+                        for src_col in src_cols:
+                            holder.add_column_lineage(src_col, tgt_col)
+                        return self.columns_resolver()
 
     def _add_dataset_from_identifier(
         self, identifier: Identifier, holder: SubQueryLineageHolder

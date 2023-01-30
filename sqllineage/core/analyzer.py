@@ -11,11 +11,14 @@ from sqlparse.sql import (
     Where,
 )
 
+from sqllineage.utils.SQLDatabase import SQLDatabase
+
 from sqllineage.core.handlers.base import (
     CurrentTokenBaseHandler,
     NextTokenBaseHandler,
 )
 from sqllineage.core.holders import StatementLineageHolder, SubQueryLineageHolder
+from sqllineage.core.handlers.source import SourceHandler
 from sqllineage.core.models import SubQuery, Table
 from sqllineage.utils.sqlparse import (
     get_subquery_parentheses,
@@ -31,6 +34,11 @@ class AnalyzerContext(NamedTuple):
 
 class LineageAnalyzer:
     """SQL Statement Level Lineage Analyzer."""
+
+    def __init__(self,resolve_wildcards:bool = False, db: Optional[SQLDatabase] = None):
+        self._resolve_wildcards = resolve_wildcards
+        self.db = db
+
 
     def analyze(self, stmt: Statement) -> StatementLineageHolder:
         """
@@ -111,6 +119,12 @@ class LineageAnalyzer:
         next_handlers = [
             handler_cls() for handler_cls in NextTokenBaseHandler.__subclasses__()
         ]
+        if cls._resolve_wildcards:
+            for next_handler in next_handlers:
+                if isinstance(next_handler,SourceHandler):
+                    next_handler.resolve_wildcards = True
+                    next_handler.db = cls.db
+
 
         subqueries = []
         for sub_token in token.tokens:
@@ -135,11 +149,16 @@ class LineageAnalyzer:
                     next_handler.handle(sub_token, holder)
         else:
             # call end of query hook here as loop is over
+            resolvers = []
             for next_handler in next_handlers:
-                next_handler.end_of_query_cleanup(holder)
+                resolvers.append(next_handler.end_of_query_cleanup(holder))
         # By recursively extracting each subquery of the parent and merge, we're doing Depth-first search
         for sq in subqueries:
-            holder |= cls._extract_from_dml(sq.token, AnalyzerContext(sq, holder.cte))
+            sub_holder = cls._extract_from_dml(sq.token, AnalyzerContext(sq, holder.cte))
+            handler = [hndl for hndl in  next_handlers if isinstance(hndl,SourceHandler)][0]
+            for resolver in resolvers:
+                resolver(sub_holder,handler)
+            holder |= sub_holder
         return holder
 
     @classmethod

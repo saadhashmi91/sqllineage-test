@@ -6,12 +6,24 @@ from networkx import DiGraph
 
 from sqllineage.core.models import Column, Path, SubQuery, Table
 from sqllineage.utils.constant import EdgeType, NodeTag
+from collections import defaultdict
 
 DATASET_CLASSES = (Path, Table)
 
 
 class ColumnLineageMixin:
     def get_column_lineage(self, exclude_subquery=True) -> Set[Tuple[Column, ...]]:
+
+    #    def join_paths(mapp,key,path_acc) -> defaultdict(list):
+    #        path = mapp[key]
+    #        head,*tail = path
+    #        if head.raw_name == '*' and tail[-1].parent in mapp.keys():
+                
+    #        pass
+
+
+        
+
         self.graph: DiGraph  # For mypy attribute checking
         # filter all the column node in the graph
         column_nodes = [n for n in self.graph.nodes if isinstance(n, Column)]
@@ -28,9 +40,15 @@ class ColumnLineageMixin:
                 node for node in target_columns if isinstance(node.parent, Table)
             }
         columns = set()
+        mapp = defaultdict(list)
         for (source, target) in itertools.product(source_columns, target_columns):
             simple_paths = list(nx.all_simple_paths(self.graph, source, target))
             for path in simple_paths:
+                #head,*tail = path
+                
+                #last = path[-1]
+                #if last
+                # mapp[str(head.parent).lower()].append({head.raw_name.lower(): tail})
                 columns.add(tuple(path))
         return columns
 
@@ -75,6 +93,8 @@ class SubQueryLineageHolder(ColumnLineageMixin):
 
     def add_write(self, value) -> None:
         self._property_setter(value, NodeTag.WRITE)
+        #if hasattr(value, "alias"):
+        #    self.graph.add_edge(value, value.alias, type=EdgeType.HAS_ALIAS)
 
     @property
     def cte(self) -> Set[SubQuery]:

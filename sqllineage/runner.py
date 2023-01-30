@@ -1,5 +1,5 @@
 import logging
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple,Optional
 
 import sqlparse
 from sqlparse.sql import Statement
@@ -10,7 +10,8 @@ from sqllineage.core.models import Column, Table
 from sqllineage.drawing import draw_lineage_graph
 from sqllineage.io import to_cytoscape
 from sqllineage.utils.constant import LineageLevel
-
+from sqllineage.utils import SQLDatabase
+from sqlalchemy import Engine
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,9 @@ class LineageRunner(object):
         encoding: str = None,
         verbose: bool = False,
         draw_options: Dict[str, str] = None,
+        resolve_wildcards: bool = False,
+        engine: Optional[Engine] = None,
+        
     ):
         """
         The entry point of SQLLineage after command line options are parsed.
@@ -48,6 +52,8 @@ class LineageRunner(object):
         self._sql = sql
         self._verbose = verbose
         self._draw_options = draw_options if draw_options else {}
+        self._resolve_wildcards = resolve_wildcards
+        self._engine = engine
         self._evaluated = False
         self._stmt: List[Statement] = []
 
@@ -166,6 +172,14 @@ Target Tables:
         print(str(self))
 
     def _eval(self):
+
+        if self._resolve_wildcards:
+            if self._engine:
+                self._db = SQLDatabase(self._engine)
+            else:
+                raise ValueError("SQL Engine not initialized")
+
+
         self._stmt = [
             s
             for s in sqlparse.parse(
@@ -176,6 +190,6 @@ Target Tables:
             )
             if s.token_first(skip_cm=True)
         ]
-        self._stmt_holders = [LineageAnalyzer().analyze(stmt) for stmt in self._stmt]
+        self._stmt_holders = [LineageAnalyzer(True,self._db).analyze(stmt) if self._resolve_wildcards else LineageAnalyzer().analyze(stmt)  for stmt in self._stmt]
         self._sql_holder = SQLLineageHolder.of(*self._stmt_holders)
         self._evaluated = True

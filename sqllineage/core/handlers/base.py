@@ -1,5 +1,6 @@
 from sqlparse.sql import Token
-
+from typing import Optional
+from sqllineage.utils.SQLDatabase import SQLDatabase
 from sqllineage.core.holders import SubQueryLineageHolder
 
 
@@ -10,6 +11,8 @@ class NextTokenBaseHandler:
 
     def __init__(self) -> None:
         self.indicator = False
+        self.resolve_wildcards = False
+        self.db: Optional[SQLDatabase] = None
 
     def _indicate(self, token: Token) -> bool:
         """
